@@ -4542,7 +4542,7 @@ def web():
             print('Fuentes incluidas en la app:', i + 1, 'archivos')
         except Exception as e:
             print('AVISO: no se pudieron descargar las fuentes; la app las cargará de internet.', e)
-    open('proyecto/www/index.html', 'w', encoding='utf-8').write(html)
+    escribir_app(html)
     if not os.path.exists('proyecto/package.json'):
         json.dump({'name': 'medu-netjer', 'version': '1.0.0', 'private': True}, open('proyecto/package.json', 'w'))
 
@@ -4581,6 +4581,91 @@ def iconos():
         lienzo.save(ruta)
     print('Iconos y pantalla de inicio listos')
 
+
+
+# ===================== Actualización automática =====================
+# La app instalada abre primero un pequeño «lanzador» (index.html) que busca en GitHub
+# la última versión publicada de la app (rama «actualizacion» del repositorio).
+# Si hay internet y una versión más nueva, la usa y la guarda; si no hay internet,
+# abre la última versión guardada o, si no hay ninguna, la que viene dentro del APK.
+import subprocess, time, tempfile, html as _html
+
+LANZADOR = r'''<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITULO__</title>
+<style>html,body{margin:0;height:100%;background:#1f3b6f;color:#f4ecdb;font:16px system-ui,sans-serif}
+#m{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;opacity:.9}</style>
+</head><body><div id="m"><div style="font-size:44px">&#x13080;</div><div>Cargando…</div></div>
+<script>
+(function(){
+var REMOTO='__REMOTO__', LOCAL='__VERSION__', DB='medu-actualizador';
+function ver(t){var m=/<meta name="medu-version" content="(\d+)"/.exec(t||'');return m?m[1]:'0'}
+function abrir(){return new Promise(function(ok,ko){try{var r=indexedDB.open(DB,1);r.onupgradeneeded=function(){r.result.createObjectStore('a')};r.onsuccess=function(){ok(r.result)};r.onerror=function(){ko(r.error)}}catch(e){ko(e)}})}
+function leer(){return abrir().then(function(db){return new Promise(function(ok){try{var q=db.transaction('a').objectStore('a').get('app');q.onsuccess=function(){ok(q.result||null)};q.onerror=function(){ok(null)}}catch(e){ok(null)}})}).catch(function(){return null})}
+function guardar(t){return abrir().then(function(db){return new Promise(function(ok){try{var tx=db.transaction('a','readwrite');tx.objectStore('a').put(t,'app');tx.oncomplete=ok;tx.onerror=ok}catch(e){ok()}})}).catch(function(){})}
+function mostrar(t){document.open();document.write(t);document.close()}
+function remoto(){
+ if(!REMOTO||!window.fetch)return Promise.resolve(null);
+ return new Promise(function(ok){
+  var fin=false;var to=setTimeout(function(){if(!fin){fin=true;ok(null)}},3500);
+  fetch(REMOTO+'?v='+Date.now(),{cache:'no-store'}).then(function(r){return r.ok?r.text():null}).then(function(t){
+   if(fin)return;fin=true;clearTimeout(to);ok(t&&t.indexOf('</html>')>0&&t.length>5000&&ver(t)!=='0'?t:null)
+  }).catch(function(){if(!fin){fin=true;clearTimeout(to);ok(null)}})
+ })
+}
+function local(){return fetch('app.html').then(function(r){return r.text()})}
+Promise.all([remoto(),leer()]).then(function(x){
+ var r=x[0],c=x[1],mejor=null,mv=LOCAL;
+ if(r&&(!c||ver(r)>ver(c)))guardar(r);
+ [r,c].forEach(function(t){if(t&&ver(t)>mv){mejor=t;mv=ver(t)}});
+ if(mejor)mostrar(mejor);else local().then(mostrar);
+}).catch(function(){local().then(mostrar)});
+})();
+</script>
+</body></html>
+'''
+
+
+def publicar(html, repo, version):
+    """Sube la app preparada a la rama «actualizacion» del repositorio."""
+    try:
+        cab = subprocess.run(['git', 'config', '--get', 'http.https://github.com/.extraheader'],
+                             capture_output=True, text=True).stdout.strip()
+        d = tempfile.mkdtemp()
+        open(os.path.join(d, 'app.html'), 'w', encoding='utf-8').write(html)
+        open(os.path.join(d, 'LEEME.txt'), 'w', encoding='utf-8').write(
+            'Rama generada automaticamente por GitHub Actions: contiene la ultima version de la app.\n'
+            'Las apps instaladas la descargan al abrirse. No hace falta tocarla.\n')
+        def g(*a):
+            return subprocess.run(['git', *a], cwd=d, capture_output=True, text=True)
+        g('init', '-q'); g('checkout', '-q', '-b', 'actualizacion')
+        g('config', 'user.name', 'github-actions'); g('config', 'user.email', 'actions@github.com')
+        g('add', '-A'); g('commit', '-q', '-m', 'Actualizacion ' + version)
+        orden = ['git'] + (['-c', 'http.extraheader=' + cab] if cab else []) + \
+                ['push', '-f', 'https://github.com/%s.git' % repo, 'actualizacion']
+        r = subprocess.run(orden, cwd=d, capture_output=True, text=True)
+        if r.returncode == 0:
+            print('Actualizacion publicada en la rama «actualizacion» (version %s)' % version)
+        else:
+            print('AVISO: no se pudo publicar la actualizacion:', r.stderr[-400:])
+    except Exception as e:
+        print('AVISO: no se pudo publicar la actualizacion:', e)
+
+
+def escribir_app(html):
+    version = time.strftime('%Y%m%d%H%M%S', time.gmtime())
+    html = re.sub(r'<meta name="medu-version"[^>]*>\n?', '', html)
+    html = re.sub(r'(<head[^>]*>)', r'\1\n<meta name="medu-version" content="%s">' % version, html, count=1)
+    open('proyecto/www/app.html', 'w', encoding='utf-8').write(html)
+    repo = os.environ.get('GITHUB_REPOSITORY', '')
+    remoto = 'https://raw.githubusercontent.com/%s/actualizacion/app.html' % repo if repo else ''
+    t = re.search(r'<title>(.*?)</title>', html, re.S)
+    titulo = _html.escape(_html.unescape(t.group(1).strip())) if t else 'Medu Netjer'
+    open('proyecto/www/index.html', 'w', encoding='utf-8').write(
+        LANZADOR.replace('__REMOTO__', remoto).replace('__VERSION__', version).replace('__TITULO__', titulo))
+    print('Lanzador con actualizacion automatica:', remoto or '(sin repositorio: solo version local)')
+    if repo:
+        publicar(html, repo, version)
 
 if __name__ == '__main__':
     {'web': web, 'iconos': iconos}[sys.argv[1]]()
