@@ -1,0 +1,2 @@
+Rama generada automaticamente por GitHub Actions: contiene la ultima version de la app.
+Las apps instaladas la descargan al abrirse. No hace falta tocarla.
